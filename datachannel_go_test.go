@@ -578,3 +578,109 @@ func TestDataChannel_NonStandardSessionDescription(t *testing.T) {
 	<-onDataChannelCalled
 	closePairNow(t, offerPC, answerPC)
 }
+
+func TestDataChannel_Dial(t *testing.T) {
+	const dialOnceChannelCapacity = 2
+
+	t.Run("handler should be called once", func(t *testing.T) {
+		report := test.CheckRoutines(t)
+		defer report()
+
+		offerPC, answerPC, err := newPair()
+		if err != nil {
+			t.Fatalf("Failed to create a PC pair for testing")
+		}
+
+		done := make(chan bool)
+		dialCalls := make(chan bool, dialOnceChannelCapacity)
+
+		answerPC.OnDataChannel(func(d *DataChannel) {
+			if d.Label() != expectedLabel {
+				return
+			}
+			d.OnDial(func() {
+				dialCalls <- true
+			})
+			d.OnMessage(func(msg DataChannelMessage) {
+				go func() {
+					// Wait a little bit to ensure all messages are processed.
+					time.Sleep(100 * time.Millisecond)
+					done <- true
+				}()
+			})
+		})
+
+		dc, err := offerPC.CreateDataChannel(expectedLabel, nil)
+		assert.NoError(t, err)
+
+		dc.OnDial(func() {
+			e := dc.SendText("Ping")
+			if e != nil {
+				t.Fatalf("Failed to send string on data channel")
+			}
+		})
+
+		assert.NoError(t, signalPair(offerPC, answerPC))
+
+		closePair(t, offerPC, answerPC, done)
+
+		assert.Len(t, dialCalls, 1)
+	})
+
+	t.Run("handler should be called once when already negotiated", func(t *testing.T) {
+		report := test.CheckRoutines(t)
+		defer report()
+
+		offerPC, answerPC, err := newPair()
+		if err != nil {
+			t.Fatalf("Failed to create a PC pair for testing")
+		}
+
+		done := make(chan bool)
+		answerDialCalls := make(chan bool, dialOnceChannelCapacity)
+		offerDialCalls := make(chan bool, dialOnceChannelCapacity)
+
+		negotiated := true
+		ordered := true
+		dataChannelID := uint16(0)
+
+		answerDC, err := answerPC.CreateDataChannel(expectedLabel, &DataChannelInit{
+			ID:         &dataChannelID,
+			Negotiated: &negotiated,
+			Ordered:    &ordered,
+		})
+		assert.NoError(t, err)
+		offerDC, err := offerPC.CreateDataChannel(expectedLabel, &DataChannelInit{
+			ID:         &dataChannelID,
+			Negotiated: &negotiated,
+			Ordered:    &ordered,
+		})
+		assert.NoError(t, err)
+
+		answerDC.OnMessage(func(msg DataChannelMessage) {
+			go func() {
+				// Wait a little bit to ensure all messages are processed.
+				time.Sleep(100 * time.Millisecond)
+				done <- true
+			}()
+		})
+		answerDC.OnDial(func() {
+			answerDialCalls <- true
+		})
+
+		offerDC.OnDial(func() {
+			offerDialCalls <- true
+			e := offerDC.SendText("Ping")
+			if e != nil {
+				t.Fatalf("Failed to send string on data channel")
+			}
+		})
+
+		assert.NoError(t, signalPair(offerPC, answerPC))
+
+		closePair(t, offerPC, answerPC, done)
+
+		assert.Len(t, answerDialCalls, 1)
+		assert.Len(t, offerDialCalls, 1)
+	})
+}

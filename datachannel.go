@@ -49,6 +49,8 @@ type DataChannel struct {
 	onMessageHandler    func(DataChannelMessage)
 	openHandlerOnce     sync.Once
 	onOpenHandler       func()
+	dialHandlerOnce     sync.Once
+	onDialHandler       func()
 	onCloseHandler      func()
 	onBufferedAmountLow func()
 	onErrorHandler      func(error)
@@ -228,6 +230,34 @@ func (d *DataChannel) onOpen() {
 	}
 }
 
+// OnDial sets an event handler which is invoked when the
+// peer has been dialed, but before said peer has responsed
+func (d *DataChannel) OnDial(f func()) {
+	d.mu.Lock()
+	d.dialHandlerOnce = sync.Once{}
+	d.onDialHandler = f
+	d.mu.Unlock()
+
+	if d.ReadyState() == DataChannelStateOpen {
+		// If the data channel is already open, call the handler immediately.
+		go d.dialHandlerOnce.Do(func() {
+			f()
+		})
+	}
+}
+
+func (d *DataChannel) onDial() {
+	d.mu.RLock()
+	handler := d.onDialHandler
+	d.mu.RUnlock()
+
+	if handler != nil {
+		go d.dialHandlerOnce.Do(func() {
+			handler()
+		})
+	}
+}
+
 // OnClose sets an event handler which is invoked when
 // the underlying data transport has been closed.
 func (d *DataChannel) OnClose(f func()) {
@@ -274,6 +304,10 @@ func (d *DataChannel) handleOpen(dc *datachannel.DataChannel, isRemote, isAlread
 	d.dataChannel = dc
 	d.mu.Unlock()
 	d.setReadyState(DataChannelStateOpen)
+
+	// fire the dial handler immediately after this peer has opened
+	// the data channel (DCEP OPEN has been sent)
+	d.onDial()
 
 	// Fire the OnOpen handler immediately not using pion/datachannel
 	// * detached datachannels have no read loop, the user needs to read and query themselves
